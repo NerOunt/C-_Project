@@ -1,0 +1,213 @@
+DROP TABLE IF EXISTS sales_receipt_items;
+DROP TABLE IF EXISTS sales_receipts;
+DROP TABLE IF EXISTS incoming_invoice_items;
+DROP TABLE IF EXISTS incoming_invoices;
+DROP TABLE IF EXISTS products;
+DROP TABLE IF EXISTS department_product_types;
+DROP TABLE IF EXISTS suppliers;
+DROP TABLE IF EXISTS payment_types;
+DROP TABLE IF EXISTS product_types;
+DROP TABLE IF EXISTS departments;
+
+
+
+CREATE TABLE departments (
+    id SERIAL PRIMARY KEY,
+    name VARCHAR(100) NOT NULL,
+    description VARCHAR(200)
+);
+
+CREATE TABLE product_types (
+    id SERIAL PRIMARY KEY,
+    name VARCHAR(100) NOT NULL
+);
+
+CREATE TABLE department_product_types (
+    id SERIAL PRIMARY KEY,
+    department_id INTEGER NOT NULL REFERENCES departments(id) ON DELETE CASCADE,
+    product_type_id INTEGER NOT NULL REFERENCES product_types(id) ON DELETE CASCADE,
+    UNIQUE (department_id, product_type_id)
+);
+
+
+CREATE TABLE products (
+    id SERIAL PRIMARY KEY,
+    name VARCHAR(100) NOT NULL,
+    ed VARCHAR(30) NOT NULL,
+    product_type_id INTEGER NOT NULL REFERENCES product_types(id)
+);
+
+CREATE TABLE suppliers (
+    id SERIAL PRIMARY KEY,
+    name VARCHAR(100) NOT NULL,
+    address VARCHAR(200),
+    phone VARCHAR(30)
+);
+
+CREATE TABLE payment_types (
+    id SERIAL PRIMARY KEY,
+    name VARCHAR(50) NOT NULL
+);
+
+CREATE TABLE incoming_invoices (
+    id SERIAL PRIMARY KEY,
+    supplier_id INTEGER NOT NULL REFERENCES suppliers(id),
+    department_id INTEGER NOT NULL REFERENCES departments(id),
+    invoice_date DATE NOT NULL,
+    total_sum NUMERIC(12,2) NOT NULL DEFAULT 0
+);
+
+CREATE TABLE incoming_invoice_items (
+    id SERIAL PRIMARY KEY,
+    incoming_invoice_id INTEGER NOT NULL REFERENCES incoming_invoices(id) ON DELETE CASCADE,
+    product_id INTEGER NOT NULL REFERENCES products(id),
+    quantity NUMERIC(12,3) NOT NULL,
+    price NUMERIC(12,2) NOT NULL
+);
+
+CREATE TABLE sales_receipts (
+    id SERIAL PRIMARY KEY,
+    department_id INTEGER NOT NULL REFERENCES departments(id),
+    payment_type_id INTEGER NOT NULL REFERENCES payment_types(id),
+    receipt_date DATE NOT NULL,
+    total_sum NUMERIC(12,2) NOT NULL DEFAULT 0
+);
+
+CREATE TABLE sales_receipt_items (
+    id SERIAL PRIMARY KEY,
+    sales_receipt_id INTEGER NOT NULL REFERENCES sales_receipts(id) ON DELETE CASCADE,
+    product_id INTEGER NOT NULL REFERENCES products(id),
+    quantity NUMERIC(12,3) NOT NULL,
+    price NUMERIC(12,2) NOT NULL
+);
+
+CREATE OR REPLACE FUNCTION insert_incoming_item() RETURNS TRIGGER AS
+$insert_incoming_item$
+BEGIN
+    UPDATE incoming_invoices
+    SET total_sum = total_sum + NEW.quantity * NEW.price
+    WHERE id = NEW.incoming_invoice_id;
+
+    RETURN NULL;
+END;
+$insert_incoming_item$ LANGUAGE plpgsql;
+
+CREATE OR REPLACE FUNCTION delete_incoming_item() RETURNS TRIGGER AS
+$delete_incoming_item$
+BEGIN
+    UPDATE incoming_invoices
+    SET total_sum = total_sum - OLD.quantity * OLD.price
+    WHERE id = OLD.incoming_invoice_id;
+
+    RETURN NULL;
+END;
+$delete_incoming_item$ LANGUAGE plpgsql;
+
+CREATE TRIGGER trg_insert_incoming_item
+AFTER INSERT ON incoming_invoice_items
+FOR EACH ROW EXECUTE PROCEDURE insert_incoming_item();
+
+CREATE TRIGGER trg_delete_incoming_item
+AFTER DELETE ON incoming_invoice_items
+FOR EACH ROW EXECUTE PROCEDURE delete_incoming_item();
+
+CREATE OR REPLACE FUNCTION insert_sales_item() RETURNS TRIGGER AS
+$insert_sales_item$
+BEGIN
+    UPDATE sales_receipts
+    SET total_sum = total_sum + NEW.quantity * NEW.price
+    WHERE id = NEW.sales_receipt_id;
+
+    RETURN NULL;
+END;
+$insert_sales_item$ LANGUAGE plpgsql;
+
+CREATE OR REPLACE FUNCTION delete_sales_item() RETURNS TRIGGER AS
+$delete_sales_item$
+BEGIN
+    UPDATE sales_receipts
+    SET total_sum = total_sum - OLD.quantity * OLD.price
+    WHERE id = OLD.sales_receipt_id;
+
+    RETURN NULL;
+END;
+$delete_sales_item$ LANGUAGE plpgsql;
+
+CREATE TRIGGER trg_insert_sales_item
+AFTER INSERT ON sales_receipt_items
+FOR EACH ROW EXECUTE PROCEDURE insert_sales_item();
+
+CREATE TRIGGER trg_delete_sales_item
+AFTER DELETE ON sales_receipt_items
+FOR EACH ROW EXECUTE PROCEDURE delete_sales_item();
+
+CREATE OR REPLACE FUNCTION check_incoming_item_department()
+RETURNS TRIGGER AS
+$check_incoming_item_department$
+DECLARE
+    dep_id INTEGER;
+    prod_type_id INTEGER;
+BEGIN
+    SELECT department_id
+    INTO dep_id
+    FROM incoming_invoices
+    WHERE id = NEW.incoming_invoice_id;
+
+    SELECT product_type_id
+    INTO prod_type_id
+    FROM products
+    WHERE id = NEW.product_id;
+
+    IF NOT EXISTS (
+        SELECT 1
+        FROM department_product_types
+        WHERE department_id = dep_id
+          AND product_type_id = prod_type_id
+    ) THEN
+        RAISE EXCEPTION 'Этот отдел не может принимать товар данного вида';
+    END IF;
+
+    RETURN NEW;
+END;
+$check_incoming_item_department$ LANGUAGE plpgsql;
+
+CREATE TRIGGER trg_check_incoming_item_department
+BEFORE INSERT ON incoming_invoice_items
+FOR EACH ROW EXECUTE PROCEDURE check_incoming_item_department();
+
+CREATE OR REPLACE FUNCTION check_sales_item_department()
+RETURNS TRIGGER AS
+$check_sales_item_department$
+DECLARE
+    dep_id INTEGER;
+    prod_type_id INTEGER;
+BEGIN
+    SELECT department_id
+    INTO dep_id
+    FROM sales_receipts
+    WHERE id = NEW.sales_receipt_id;
+
+    SELECT product_type_id
+    INTO prod_type_id
+    FROM products
+    WHERE id = NEW.product_id;
+
+    IF NOT EXISTS (
+        SELECT 1
+        FROM department_product_types
+        WHERE department_id = dep_id
+          AND product_type_id = prod_type_id
+    ) THEN
+        RAISE EXCEPTION 'Этот отдел не может продавать товар данного вида';
+    END IF;
+
+    RETURN NEW;
+END;
+$check_sales_item_department$ LANGUAGE plpgsql;
+
+CREATE TRIGGER trg_check_sales_item_department
+BEFORE INSERT ON sales_receipt_items
+FOR EACH ROW EXECUTE PROCEDURE check_sales_item_department();
+
+
+
